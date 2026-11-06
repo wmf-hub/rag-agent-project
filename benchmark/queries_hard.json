@@ -1,0 +1,18 @@
+[
+  { "query": "华东区报销要多久内提交", "gold": "报销管理制度-华东分公司补充细则.pdf", "type": "conflict" },
+  { "query": "总部报销时限是多少", "gold": "报销管理制度.pdf", "type": "conflict" },
+  { "query": "国内出差住宿一晚上限", "gold": "差旅费用标准.pdf", "type": "conflict" },
+  { "query": "海外出差住宿标准", "gold": "差旅费用标准-海外版.pdf", "type": "conflict" },
+  { "query": "研发中心可以弹性上班吗", "gold": "考勤与休假-研发中心弹性工作制.pdf", "type": "paraphrase" },
+  { "query": "外包人员账号有效期多久", "gold": "信息系统账号管理办法-外包人员版.pdf", "type": "conflict" },
+  { "query": "v1 接口什么时候彻底下线", "gold": "产品A接口文档-v1废弃说明.md", "type": "keyword" },
+  { "query": "接口限流每分钟多少次", "gold": "产品A接口文档.md", "type": "conflict" },
+  { "query": "教育优惠能免费用多久", "gold": "产品B计费说明-教育优惠.md", "type": "paraphrase" },
+  { "query": "紧急修复需要谁签字", "gold": "版本发布规范-紧急修复补充说明.md", "type": "keyword" },
+  { "query": "线上会议要在 OA 登记吗", "gold": "会议室预定规则-线上会议补充.md", "type": "keyword" },
+  { "query": "大客户打六五折谁审批", "gold": "折扣与报价审批权限-大客户特批.md", "type": "numeral" },
+  { "query": "海外渠道返点比例", "gold": "渠道伙伴管理办法-海外渠道.pdf", "type": "conflict" },
+  { "query": "源代码能开源吗", "gold": "数据安全与保密制度-研发数据分级补充.pdf", "type": "paraphrase" },
+  { "query": "IT 采购多少钱要技术委员会评审", "gold": "采购与付款流程-IT采购专项.pdf", "type": "numeral" },
+  { "query": "试用期工资打几折", "gold": "员工手册-试用期与转正.pdf", "type": "numeral" }
+]
