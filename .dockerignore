@@ -1,0 +1,38 @@
+# 版本控制 / IDE
+.git
+.gitignore
+.idea
+.vscode
+*.iml
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# 敏感配置：镜像里绝不能带 .env
+.env
+.env.*
+!.env.example
+
+# 大体积数据：运行时挂载，不进镜像
+volumes/
+app/rag/models/
+requirements.lock.txt
+
+# 文档与日志
+*.md
+*.log
+logs/
