@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <!-- 站点图标：favicon.ico 与页面同目录，浏览器也会自动请求根路径的 /favicon.ico -->
+  <link rel="icon" href="favicon.ico">
+  <title>知识库问答 · 流式输出</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 20px;
+      color: #1f2328;
+      background: #fff;
+    }
+    h1 { font-size: 20px; }
+    .bar { display: flex; gap: 8px; margin: 16px 0; }
+    #input {
+      flex: 1;
+      padding: 10px 12px;
+      font-size: 15px;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      font-family: inherit;
+    }
+    #input:focus { outline: 2px solid #0969da33; border-color: #0969da; }
+    button {
+      padding: 10px 20px;
+      font-size: 15px;
+      border: none;
+      border-radius: 8px;
+      background: #0969da;
+      color: #fff;
+      cursor: pointer;
+    }
+    button:disabled { background: #8c959f; cursor: not-allowed; }
+    #status { font-size: 13px; color: #57606a; height: 18px; }
+    #counter { float: right; font-size: 13px; color: #8c959f; font-variant-numeric: tabular-nums; }
+    #counter.over { color: #cf222e; font-weight: 600; }
+    #output {
+      margin-top: 16px;
+      padding: 16px;
+      min-height: 120px;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      background: #f6f8fa;
+      font-size: 15px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .cursor {
+      display: inline-block;
+      width: 8px;
+      height: 17px;
+      background: #0969da;
+      vertical-align: text-bottom;
+      animation: blink 1s steps(2) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    #refs { margin-top: 16px; }
+    #refs h2 { font-size: 14px; color: #57606a; margin-bottom: 8px; }
+    #refs ul { margin: 0; padding-left: 20px; font-size: 14px; }
+    #refs li { margin: 4px 0; }
+    .score { color: #1a7f37; font-variant-numeric: tabular-nums; }
+    #err { margin-top: 12px; color: #cf222e; font-size: 14px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>知识库问答 · 流式输出演示</h1>
+
+  <div class="bar">
+    <input id="input" placeholder="输入问题，例如：年假有几天？" value="年假有几天？" />
+    <button id="send">发送</button>
+  </div>
+
+  <div id="status"><span id="status-text"></span><span id="counter">0 / 2000</span></div>
+  <div id="output"></div>
+  <div id="err"></div>
+
+  <div id="refs">
+    <h2>引用来源</h2>
+    <ul id="refs-list"></ul>
+  </div>
+
+  <script type="module">
+    // 后端地址：端口要和启动命令一致
+    const API = 'http://127.0.0.1:8001/chat/stream';
+
+    // 问题最大长度（字符数）：太长会挤爆 LLM 上下文，也容易拖慢检索
+    const MAX_LEN = 2000;
+
+    const inputEl = document.getElementById('input');
+    const sendBtn = document.getElementById('send');
+    const statusTextEl = document.getElementById('status-text');
+    const counterEl = document.getElementById('counter');
+    const outputEl = document.getElementById('output');
+    const refsListEl = document.getElementById('refs-list');
+    const errEl = document.getElementById('err');
+
+    // 每次请求换一个 thread_id，避免和上一次的对话历史混在一起
+    let threadId = 'web-' + Date.now();
+
+    // 请求进行中标记：防止打字时 updateCounter 把按钮重新启用，导致重复提交
+    let busy = false;
+
+    // 实时更新字数：超限变红并禁用发送，避免用户点了才被告知
+    function updateCounter() {
+      const len = inputEl.value.length;
+      counterEl.textContent = `${len} / ${MAX_LEN}`;
+      const over = len > MAX_LEN;
+      counterEl.classList.toggle('over', over);
+      sendBtn.disabled = busy || over;
+      if (over) {
+        errEl.textContent = `问题过长（${len} 字），请控制在 ${MAX_LEN} 字以内`;
+      } else if (errEl.textContent.startsWith('问题过长')) {
+        errEl.textContent = '';
+      }
+    }
+
+    function setStatus(text) {
+      statusTextEl.textContent = text;
+    }
+
+    // 光标：流式输出时放在文末，表示还在生成
+    function showCursor(on) {
+      document.querySelector('.cursor')?.remove();
+      if (on) {
+        const cur = document.createElement('span');
+        cur.className = 'cursor';
+        outputEl.appendChild(cur);
+      }
+    }
+
+    function appendText(text) {
+      showCursor(false);
+      outputEl.textContent += text;
+      showCursor(true);
+    }
+
+    function renderCitations(list) {
+      refsListEl.innerHTML = '';
+      for (const c of list) {
+        const li = document.createElement('li');
+        const score = Number(c.score).toFixed(3);
+        li.textContent = `${c.source} `;
+        const span = document.createElement('span');
+        span.className = 'score';
+        span.textContent = `(相关度 ${score})`;
+        li.appendChild(span);
+        refsListEl.appendChild(li);
+      }
+    }
+
+    async function ask(message) {
+      errEl.textContent = '';
+      outputEl.textContent = '';
+      refsListEl.innerHTML = '';
+      busy = true;
+      updateCounter();
+      setStatus('已发送，等待响应…');
+
+      let citations = [];
+
+      try {
+        const resp = await fetch(API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, thread_id: threadId }),
+        });
+
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+
+        setStatus('正在接收…');
+
+        // 拿到响应体的流式读取器，一个 chunk 一个 chunk 地读
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          // stream: true 表示「这不是最后一段」，避免把多字节汉字从中间切断
+          buffer += decoder.decode(value, { stream: true });
+
+          // SSE 用空行分隔消息
+          const blocks = buffer.split('\n\n');
+          buffer = blocks.pop(); // 最后一段可能不完整，留到下一轮再拼
+
+          for (const block of blocks) {
+            let event = 'message';
+            let data = '';
+            for (const line of block.split('\n')) {
+              if (line.startsWith('event:')) event = line.slice(6).trim();
+              if (line.startsWith('data:')) data = line.slice(5).trim();
+            }
+            if (!data) continue;
+
+            const payload = JSON.parse(data);
+
+            if (event === 'token') {
+              appendText(payload.text);
+            } else if (event === 'citations') {
+              citations = payload.citations;
+              renderCitations(citations);
+            } else if (event === 'error') {
+              errEl.textContent = payload.message;
+            }
+          }
+        }
+
+        showCursor(false);
+        setStatus(`完成 · 引用 ${citations.length} 条`);
+      } catch (e) {
+        showCursor(false);
+        errEl.textContent = `请求失败：${e.message}\n请确认后端已启动：${API}`;
+        setStatus('失败');
+      } finally {
+        // 解除忙状态，用 updateCounter 统一恢复按钮状态（超限时仍然保持禁用）
+        busy = false;
+        updateCounter();
+      }
+    }
+
+    function send() {
+      // 请求进行中或超限时直接忽略，按钮虽已禁用，但回车键不受按钮状态约束
+      if (busy || sendBtn.disabled) return;
+      const message = inputEl.value.trim();
+      if (!message) return;
+      // 兜底：trim 之后长度仍可能超限（前面空格不计入，但内容本身超了）
+      if (message.length > MAX_LEN) {
+        errEl.textContent = `问题过长（${message.length} 字），请控制在 ${MAX_LEN} 字以内`;
+        return;
+      }
+      // 新的一轮对话，换 thread_id，让后端把它当成独立的会话
+      threadId = 'web-' + Date.now();
+      ask(message);
+    }
+
+    sendBtn.addEventListener('click', send);
+    inputEl.addEventListener('input', updateCounter);
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') send();
+    });
+    updateCounter();
+  </script>
+</body>
+</html>
