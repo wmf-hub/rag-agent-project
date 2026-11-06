@@ -1,5 +1,5 @@
 """
-检索质量评测：纯向量 vs 混合检索 vs 混合 + 精排。
+检索质量评测：纯向量 vs 混合检索 vs 混合 + 精排，以及阈值的取舍。
 
 用法（在项目根目录）：
     python benchmark/run_eval.py
@@ -10,6 +10,7 @@
 - 指标在「文档粒度」上算：Top-N 里只要命中 gold 文档的任意 chunk 就算召回
 - 语料 = 基础文档 + 近义干扰文档（分公司/海外/旧版规则，数字互相冲突），
   这样才能测出「混合检索抗术语漂移」和「精排抗近义干扰」的价值
+- 另有一组「无答案」query，用来评估阈值能拦下多少误召回、又会误伤多少正常问题
 """
 import argparse
 import json
@@ -30,6 +31,7 @@ from app.rag.retriever import get_reranker  # noqa: E402
 EVAL_COLLECTION = "eval_kb"
 BENCH_DIR = Path(__file__).resolve().parent
 CUTOFFS = (1, 3)
+THRESHOLD_SWEEP = (0.05, 0.1, 0.2, 0.3, 0.5)
 
 VARIANTS = [
     ("纯向量（dense）", "dense"),
@@ -37,29 +39,6 @@ VARIANTS = [
     ("混合 + Cross-Encoder 精排", "rerank"),
     (f"混合 + 精排 + 阈值 {config.RERANK_SCORE_THRESHOLD}", "threshold"),
 ]
-
-
-def _dense_search_with_anns_field(query_vec: list[float], top_k: int) -> list[dict]:
-    """
-    评测进程内替换 vs.search_dense。
-
-    原因：生产版 search_dense 调用 client.search 时没有传 anns_field，
-    而新 schema 同时有 dense(vector) 与 sparse(sparse) 两个向量字段，
-    Milvus 会报 code=1100 "multiple anns_fields exist"。
-    （线上默认走 hybrid 分支所以没暴露；把 HYBRID_ENABLED 关掉就会踩到。）
-
-    这里只补一个 anns_field="vector"，检索行为与生产完全一致。
-    """
-    client = vs.get_milvus_client()
-    vs.ensure_collection_loaded()
-    results = client.search(
-        collection_name=vs.COLLECTION_NAME,
-        data=[query_vec],
-        anns_field="vector",
-        limit=top_k,
-        output_fields=["content", "metadata"],
-    )
-    return results[0] if results else []
 
 
 def load_json(name: str):
@@ -81,9 +60,40 @@ def rank_of(sources: list[str], gold: str, cutoff: int) -> int:
     return 0
 
 
+def run_query(query: str, top_k: int, embeddings, reranker) -> dict:
+    """跑一遍四种配置，返回各自的排序结果（sources 为完整 top_k 列表）。"""
+    vec = embeddings.embed_query(query)
+
+    dense_sources = [source_of(h) for h in vs.search_dense(vec, top_k)]
+    hybrid_hits = vs.search_hybrid(query, vec, top_k)
+    hybrid_sources = [source_of(h) for h in hybrid_hits]
+
+    pairs = [(query, (h.get("entity") or {}).get("content", "")) for h in hybrid_hits]
+    scores = reranker.score(pairs) if pairs else []
+    ranked = sorted(zip(hybrid_hits, scores), key=lambda x: float(x[1]), reverse=True)
+
+    rerank_sources = [source_of(h) for h, _ in ranked]
+    threshold_sources = [
+        source_of(h) for h, s in ranked if float(s) >= config.RERANK_SCORE_THRESHOLD
+    ]
+
+    return {
+        "query": query,
+        "dense": dense_sources,
+        "hybrid": hybrid_sources,
+        "rerank": rerank_sources,
+        "threshold": threshold_sources,
+        "top1_score": float(ranked[0][1]) if ranked else 0.0,
+    }
+
+
 def evaluate(top_k: int) -> dict:
     corpus = load_json("corpus.json") + load_json("distractors.json")
-    queries = load_json("queries.json") + load_json("queries_hard.json")
+    answerable = [
+        {**item, "gold": item["gold"]}
+        for item in load_json("queries.json") + load_json("queries_hard.json")
+    ]
+    no_answer = load_json("queries_noanswer.json")
 
     # ---- 写入独立评测集合 ----
     vs.COLLECTION_NAME = EVAL_COLLECTION
@@ -102,50 +112,32 @@ def evaluate(top_k: int) -> dict:
     embeddings = vs.get_embeddings()
     reranker = get_reranker()
 
-    # 只在本进程内替换：生产版 search_dense 在新 schema 下缺 anns_field（见函数说明）
-    vs.search_dense = _dense_search_with_anns_field
-
     records = []
-    for i, item in enumerate(queries, 1):
-        query, gold = item["query"], item["gold"]
-        vec = embeddings.embed_query(query)
-
-        dense_sources = [source_of(h) for h in vs.search_dense(vec, top_k)]
-        hybrid_hits = vs.search_hybrid(query, vec, top_k)
-        hybrid_sources = [source_of(h) for h in hybrid_hits]
-
-        pairs = [(query, (h.get("entity") or {}).get("content", "")) for h in hybrid_hits]
-        scores = reranker.score(pairs) if pairs else []
-        ranked = sorted(zip(hybrid_hits, scores), key=lambda x: float(x[1]), reverse=True)
-
-        rerank_sources = [source_of(h) for h, _ in ranked]
-        threshold_sources = [
-            source_of(h) for h, s in ranked if float(s) >= config.RERANK_SCORE_THRESHOLD
-        ]
-
-        record = {
-            "query": query,
-            "gold": gold,
-            "type": item.get("type", "keyword"),
-            "dense": dense_sources,
-            "hybrid": hybrid_sources,
-            "rerank": rerank_sources,
-            "threshold": threshold_sources,
-            "top1_score": float(ranked[0][1]) if ranked else 0.0,
-        }
+    for i, item in enumerate(answerable, 1):
+        record = run_query(item["query"], top_k, embeddings, reranker)
+        record["gold"] = item["gold"]
+        record["type"] = item.get("type", "keyword")
         records.append(record)
 
-        d1 = rank_of(dense_sources, gold, 1)
-        r1 = rank_of(rerank_sources, gold, 1)
-        mark = "✓" if r1 else ("✗" if not rank_of(rerank_sources, gold, 3) else "△")
+        d1 = rank_of(record["dense"], item["gold"], 1)
+        r1 = rank_of(record["rerank"], item["gold"], 1)
+        mark = "✓" if r1 else ("✗" if not rank_of(record["rerank"], item["gold"], 3) else "△")
         fixed = " [精排纠正]" if (not d1 and r1) else ""
-        print(f"  [{i:2d}/{len(queries)}] {mark} {query}{fixed}")
+        print(f"  [{i:2d}/{len(answerable)}] {mark} {item['query']}{fixed}")
+
+    print(f"无答案 query：{len(no_answer)} 条")
+    rejected = []
+    for item in no_answer:
+        record = run_query(item["query"], top_k, embeddings, reranker)
+        rejected.append(record)
+        print(f"  [NA] {item['query']}  top1={record['top1_score']:.4f}")
 
     summary = {
         "records": records,
+        "no_answer": rejected,
         "corpus": len(corpus),
         "chunks": chunk_count,
-        "queries": len(queries),
+        "queries": len(answerable),
     }
     for _, key in VARIANTS:
         summary[key] = {
@@ -168,13 +160,24 @@ def evaluate(top_k: int) -> dict:
                 n: sum(1 for r in subset if rank_of(r[key], r["gold"], n)) / len(subset)
                 for n in CUTOFFS
             }
+
+    # 阈值扫描：能拦下多少「无答案」，又会误伤多少「有答案」
+    sweep = []
+    for threshold in THRESHOLD_SWEEP:
+        intercept = sum(1 for r in rejected if r["top1_score"] < threshold) / len(rejected)
+        damage = sum(1 for r in records if r["top1_score"] < threshold) / len(records)
+        sweep.append((threshold, intercept, damage))
+    summary["sweep"] = sweep
     return summary
 
 
 def render_markdown(summary: dict) -> str:
     n1, n3 = CUTOFFS
     lines = [
-        f"# 检索评测结果（语料 {summary['corpus']} 篇 / {summary['chunks']} chunk，query {summary['queries']} 条）",
+        f"# 检索评测结果（语料 {summary['corpus']} 篇 / {summary['chunks']} chunk，"
+        f"有答案 query {summary['queries']} 条，无答案 query {len(summary['no_answer'])} 条）",
+        "",
+        "## 四种配置对比（仅统计有答案 query）",
         "",
         f"| 配置 | Recall@{n1} | Recall@{n3} | MRR@{n3} | 无结果率 |",
         "|---|---|---|---|---|",
@@ -191,7 +194,7 @@ def render_markdown(summary: dict) -> str:
         "",
         f"## 按 query 类型拆分（Recall@{n1}）",
         "",
-        f"| 类型 | 条数 | 纯向量 | 混合 + 精排 | 提升 |",
+        "| 类型 | 条数 | 纯向量 | 混合 + 精排 | 提升 |",
         "|---|---|---|---|---|",
     ]
     for qtype in types:
@@ -201,6 +204,19 @@ def render_markdown(summary: dict) -> str:
         lines.append(
             f"| {qtype} | {count} | {dense*100:.1f}% | {rerank*100:.1f}% | {(rerank-dense)*100:+.1f} pt |"
         )
+
+    lines += [
+        "",
+        "## 阈值权衡",
+        "",
+        "「拦截率」= 无答案问题被正确拒答的比例；「误伤率」= 有答案问题被滤空的比例。",
+        "",
+        "| 阈值 | 拦截率（无答案） | 误伤率（有答案） |",
+        "|---|---|---|",
+    ]
+    for threshold, intercept, damage in summary["sweep"]:
+        marker = " ←当前配置" if abs(threshold - config.RERANK_SCORE_THRESHOLD) < 1e-9 else ""
+        lines.append(f"| {threshold:.2f} | {intercept*100:.1f}% | {damage*100:.1f}% |{marker}")
 
     fixed = [
         r
@@ -215,15 +231,11 @@ def render_markdown(summary: dict) -> str:
                 f"精排提到第 1 名（{r['gold']}）"
             )
 
-    misses = [
-        r for r in summary["records"] if not rank_of(r["rerank"], r["gold"], 3)
-    ]
+    misses = [r for r in summary["records"] if not rank_of(r["rerank"], r["gold"], 3)]
     if misses:
         lines += ["", f"## 未命中 Top-3（{len(misses)} 条）", ""]
         for r in misses:
-            lines.append(
-                f"- `{r['query']}` → 期望 `{r['gold']}`，实际：{r['rerank'][:3]}"
-            )
+            lines.append(f"- `{r['query']}` → 期望 `{r['gold']}`，实际：{r['rerank'][:3]}")
     return "\n".join(lines) + "\n"
 
 

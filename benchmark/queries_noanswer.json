@@ -1,0 +1,10 @@
+[
+  { "query": "公司股票代码是多少", "type": "no_answer" },
+  { "query": "今年的年会在哪里办", "type": "no_answer" },
+  { "query": "研发用的 GPU 是什么型号", "type": "no_answer" },
+  { "query": "员工期权怎么行权", "type": "no_answer" },
+  { "query": "哺乳假有多少天", "type": "no_answer" },
+  { "query": "公司有健身房吗", "type": "no_answer" },
+  { "query": "产假多少天", "type": "no_answer" },
+  { "query": "办公室可以养宠物吗", "type": "no_answer" }
+]
