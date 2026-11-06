@@ -1,4 +1,5 @@
 # Agent 知识库问答服务
+[github.com/wmf-hub/rag-agent-project.git](https://github.com/wmf-hub/rag-agent-project.git)
 
 基于 **LangGraph** 的 ReAct 知识库问答后端：混合检索 + Cross-Encoder 精排 + 多轮/长期记忆 + SSE 流式输出。
 
