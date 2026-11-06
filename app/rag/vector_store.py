@@ -143,6 +143,9 @@ def search_dense(query_vec: list[float], top_k: int) -> list[dict]:
     results = client.search(
         collection_name=COLLECTION_NAME,
         data=[query_vec],
+        # 集合同时有 dense(vector) 与 sparse(sparse) 两个向量字段，
+        # 不显式指定 anns_field 时 Milvus 无法判断该搜哪个，会报 code=1100
+        anns_field="vector",
         limit=top_k,
         output_fields=["content", "metadata"],
     )
