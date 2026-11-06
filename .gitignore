@@ -1,0 +1,48 @@
+# ================= 环境变量 / 密钥 =================
+.env
+.env.*
+!.env.example
+
+# ================= Python =================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 测试 / 覆盖率
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# ================= IDE / 系统 =================
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ================= 数据与模型（体积大，绝不能入库） =================
+# docker-compose 挂载出来的 Milvus / MinIO / etcd 数据
+volumes/
+# 本地 milvus-lite 库（若改到项目内）
+*.db
+*.db-*
+# 下载的 rerank / embedding 模型权重（1GB+）
+app/rag/models/
+
+# ================= 日志 =================
+*.log
+logs/
